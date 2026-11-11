@@ -1,59 +1,52 @@
 /*
- * app/main.c — Echo demo with per-100-byte status report.
+ * app/main.c — Command-driven demo of the fully-buffered UART.
  *
- * Type a character in the serial terminal: it comes back immediately.
- * Every 100 bytes received, print a status line with total, drops,
- * and overruns. This makes three things visible at a glance:
+ * Commands (single keypress):
+ *   'x' — burst: queue 5 status lines in one shot, demonstrate that
+ *         main returns immediately while the ISR drips them out
+ *   's' — stats: tx_pending, tx_drops (there are none — TX blocks
+ *         instead), rx_drops, overruns
+ *   any other key — echo it back
  *
- *   1. The RX ISR fires at all (bytes come back)
- *   2. The main loop is draining the buffer (drops stays low)
- *   3. Nothing else in the system is starving the ISR (overruns = 0)
- *
- * Type slowly → drops stays at 0 forever. Main has plenty of time
- * between bytes to drain and echo each one.
- *
- * Paste a large block → drops climbs. That's the ring buffer
- * overflowing because main can't echo 1000 chars as fast as the ISR
- * can receive them at 115200. Not a bug; the visible signal that a
- * 64-byte buffer isn't sized for bulk input. Increase UART_RX_BUF_SIZE
- * in src/uart.c to 256 or 1024 if you want to absorb larger pastes.
+ * What to notice:
+ *   - Press 'x' ten times in a row, fast. All 50 lines come out,
+ *     smoothly, in order. Main never stalled on UART during the
+ *     presses — each keypress was handled in <1 ms.
+ *   - Right after 'x' press, 's' shows tx_pending > 0. A second
+ *     later, back to 0 — the ISR drained it in the background.
+ *   - No line is ever truncated mid-character. Every printf is atomic
+ *     at the queue level.
  */
 #include "uart.h"
 
-static void print_u32(uint32_t v) {
-    char buf[10];
-    int i = 0;
-    if (v == 0) { uart_putc('0'); return; }
-    while (v > 0) { buf[i++] = (char)('0' + (v % 10U)); v /= 10U; }
-    while (i--) uart_putc(buf[i]);
-}
-
 int main(void) {
-    if (uart_init(115200) != 0) {
-        /* Can't print an error — the console we'd use is broken. */
-        while (1) { }
-    }
+    if (uart_init(115200) != 0) while (1) { }
 
-    uart_puts("\r\n=== UART RX interrupt demo ===\r\n");
-    uart_puts("Type anything — it echoes back.\r\n");
-    uart_puts("Status every 100 bytes: total, drops, overruns.\r\n\r\n");
+    uart_puts("\r\n=== UART fully-buffered demo ===\r\n");
+    uart_puts("'x' = burst 5 lines, 's' = stats, other = echo\r\n\r\n");
 
-    uint32_t total = 0;
+    uint32_t burst_count = 0;
+
     while (1) {
         int c = uart_getc();
         if (c < 0) continue;
 
-        uart_putc((char)c);
-        total++;
-
-        if ((total % 100U) == 0) {
-            uart_puts("\r\n[bytes=");
-            print_u32(total);
-            uart_puts(" drops=");
-            print_u32(uart_get_drops());
-            uart_puts(" overruns=");
-            print_u32(uart_get_overruns());
-            uart_puts("]\r\n");
+        if (c == 'x') {
+            burst_count++;
+            for (int i = 0; i < 5; i++) {
+                uart_printf("burst %u line %d of 5 — this line is ~40 chars long\r\n",
+                            burst_count, i + 1);
+            }
+            /* At this point, up to 5 lines (~200 bytes) are queued in
+             * the TX ring buffer. main returns to the loop instantly.
+             * The ISR pushes them out over the next ~17 ms at 115200. */
+        } else if (c == 's') {
+            uart_printf("tx_pending=%u rx_drops=%u overruns=%u\r\n",
+                        uart_tx_pending(),
+                        uart_get_rx_drops(),
+                        uart_get_overruns());
+        } else {
+            uart_putc((char)c);
         }
     }
 }
