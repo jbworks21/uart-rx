@@ -1,0 +1,11 @@
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+*.d
+.vscode/
+.idea/
+*.swp
+.DS_Store
+*.log
